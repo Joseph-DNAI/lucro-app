@@ -1,10 +1,11 @@
 /* Service Worker — Lucro App (escopo /app/) */
-const CACHE = 'lucroapp-v1';
+const CACHE = 'lucroapp-v2';
 const ASSETS = [
   './',
   './index.html',
   './manifest.json',
   '/logo.png',
+  '/logo.jpg',
   'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js'
 ];
 
