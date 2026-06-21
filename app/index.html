@@ -479,7 +479,7 @@ body.lic-locked{overflow:hidden;}
     <div class="km-box" style="background:linear-gradient(135deg,rgba(245,158,11,.08),rgba(252,211,77,.04));border-color:rgba(245,158,11,.2)"><div class="km-label">Minimo por km (bruto no app)</div><div><span class="km-value" id="km-min" style="color:var(--amber2)">0,000</span><span class="km-unit">R$/km</span></div><div class="km-desc">abaixo disso e prejuizo</div></div>
     <div class="km-box" style="background:linear-gradient(135deg,rgba(139,92,246,.08),rgba(167,139,250,.04));border-color:rgba(139,92,246,.2)"><div class="km-label">Minimo por corrida (bruto)</div><div><span class="km-value" id="corrida-min" style="color:#C4B5FD;font-size:28px">0,00</span></div><div class="km-desc" id="corrida-min-desc">aguardando config</div></div>
   </div>
-  <div class="card"><div class="card-title">Corridas necessarias por dia</div><div id="corridas-meta"></div></div>
+  <div class="card"><div class="card-title">Recomendacao do app — km e corridas por dia</div><div id="corridas-meta"></div></div>
 </div>
 
 <!-- ANALISE -->
@@ -502,13 +502,15 @@ body.lic-locked{overflow:hidden;}
       <div class="grid-2" style="gap:10px">
         <div class="field" style="margin:0"><label>Consumo (km/L)</label><input type="number" id="consumo" value="12" step="0.1" oninput="calc()"></div>
         <div class="field" style="margin:0"><label>Preco combustivel</label><div class="input-wrap has-prefix"><span class="input-prefix">R$</span><input type="number" id="precoComb" value="6.30" step="0.01" oninput="calc()"></div></div>
-        <div class="field" style="margin:0"><label>KM por dia</label><div class="input-wrap has-suffix"><input type="number" id="kmDia" value="150" oninput="calc()"><span class="input-suffix">km</span></div></div>
-        <div class="field" style="margin:0"><label>Dias/semana</label><div class="input-wrap has-suffix"><input type="number" id="diasSemana" value="6" min="1" max="7" oninput="calc()"><span class="input-suffix">d</span></div></div>
+        <div class="field" style="margin:0;grid-column:1/-1"><label>Quantos dias quer trabalhar na semana?</label><div class="input-wrap has-suffix"><input type="number" id="diasSemana" value="6" min="1" max="7" oninput="calc()"><span class="input-suffix">dias</span></div></div>
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Financiamento</div>
-      <div class="grid-2" style="gap:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+        <div class="card-title" style="margin:0">Financiamento do carro</div>
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="fin-toggle" onchange="toggleFin()" style="width:18px;height:18px;accent-color:var(--accent)"><span style="font-size:13px;color:var(--muted)">Tenho</span></label>
+      </div>
+      <div id="fin-fields" class="grid-2" style="gap:10px;display:none;margin-top:10px">
         <div class="field" style="margin:0"><label>Parcela mensal</label><div class="input-wrap has-prefix"><span class="input-prefix">R$</span><input type="number" id="parcela" value="1200" oninput="calc()"></div></div>
         <div class="field" style="margin:0"><label>Amortizacao extra</label><div class="input-wrap has-prefix"><span class="input-prefix">R$</span><input type="number" id="amort" value="0" oninput="calc()"></div></div>
       </div>
@@ -524,12 +526,13 @@ body.lic-locked{overflow:hidden;}
       </div>
     </div>
     <div class="card">
-      <div class="card-title">Metas e corridas</div>
+      <div class="card-title">Meta e ganhos</div>
       <div class="grid-2" style="gap:10px">
         <div class="field" style="margin:0;grid-column:1/-1"><label>Lucro liquido desejado/mes</label><div class="input-wrap has-prefix"><span class="input-prefix">R$</span><input type="number" id="metaLucro" value="3000" oninput="calc()"></div></div>
-        <div class="field" style="margin:0"><label>Corridas/dia</label><input type="number" id="corridasDia" value="10" oninput="calc()"></div>
+        <div class="field" style="margin:0"><label>Ganho medio por km (bruto)</label><div class="input-wrap has-prefix"><span class="input-prefix">R$</span><input type="number" id="ganhoKm" value="1.20" step="0.01" oninput="calc()"></div></div>
         <div class="field" style="margin:0"><label>KM/corrida</label><div class="input-wrap has-suffix"><input type="number" id="kmCorrida" value="8" step="0.1" oninput="calc()"><span class="input-suffix">km</span></div></div>
       </div>
+      <p style="font-size:12px;color:var(--muted);margin-top:8px">O quanto voce recebe (bruto, antes da taxa do app) por km rodado, em media. O app usa isso para <strong>recomendar quantos km e corridas por dia</strong> voce precisa — veja na aba <strong>Metas</strong>.</p>
     </div>
     <div class="card"><div class="card-title">Resumo dos custos mensais</div><div id="resumo-custos"></div></div>
     <div class="card" style="border-color:rgba(239,68,68,.25)">
@@ -689,28 +692,45 @@ function updateStorageInfo(){
 
 function loadConfig(){
   var cfg=getConfig();
-  var fields=['consumo','precoComb','kmDia','diasSemana','parcela','amort','manut','seguro','ipva','taxaApp','outros','metaLucro','corridasDia','kmCorrida'];
+  var fields=['consumo','precoComb','diasSemana','parcela','amort','manut','seguro','ipva','taxaApp','outros','metaLucro','ganhoKm','kmCorrida'];
   fields.forEach(function(f){if(cfg[f]!==undefined){var el=document.getElementById(f);if(el)el.value=cfg[f];}});
+  var ft=document.getElementById('fin-toggle');if(ft)ft.checked=!!cfg.temFin;
+  toggleFin(true);
+}
+
+function toggleFin(skipCalc){
+  var ft=document.getElementById('fin-toggle'),ff=document.getElementById('fin-fields');
+  if(ff)ff.style.display=(ft&&ft.checked)?'grid':'none';
+  if(skipCalc!==true)calc();
 }
 
 function saveConfigFromInputs(){
-  var fields=['consumo','precoComb','kmDia','diasSemana','parcela','amort','manut','seguro','ipva','taxaApp','outros','metaLucro','corridasDia','kmCorrida'];
+  var fields=['consumo','precoComb','diasSemana','parcela','amort','manut','seguro','ipva','taxaApp','outros','metaLucro','ganhoKm','kmCorrida'];
   var cfg={};
   fields.forEach(function(f){var el=document.getElementById(f);if(el)cfg[f]=el.value;});
+  var ft=document.getElementById('fin-toggle');if(ft)cfg.temFin=ft.checked;
   saveConfig(cfg);
 }
 
 /* ── Calc ── */
 function calc(){
   saveConfigFromInputs();
-  var consumo=v('consumo'),precoComb=v('precoComb'),kmDia=v('kmDia'),diasSemana=v('diasSemana');
-  var parcela=v('parcela'),amort=v('amort'),manut=v('manut'),seguro=v('seguro'),ipva=v('ipva');
+  var consumo=v('consumo'),precoComb=v('precoComb'),diasSemana=v('diasSemana');
+  var temFin=!!(document.getElementById('fin-toggle')&&document.getElementById('fin-toggle').checked);
+  var parcela=temFin?v('parcela'):0,amort=temFin?v('amort'):0,manut=v('manut'),seguro=v('seguro'),ipva=v('ipva');
   var taxaApp=v('taxaApp')/100,outros=v('outros'),metaLucro=v('metaLucro');
-  var corridasDia=v('corridasDia'),kmCorrida=v('kmCorrida');
-  var diasMes=diasSemana*4.33,kmMes=kmDia*diasMes;
+  var ganhoKm=v('ganhoKm'),kmCorrida=v('kmCorrida');
+  var diasMes=diasSemana*4.33;
   var custoCombKm=consumo>0?precoComb/consumo:0;
-  var custoCombTotal=custoCombKm*kmMes;
   var custoFixoMes=parcela+amort+manut+seguro+ipva+outros;
+  // O APP RECOMENDA km/dia e corridas/dia (em vez de o usuario digitar):
+  // margem por km = ganho/km depois da taxa do app, menos o combustivel/km.
+  var margemKm=ganhoKm*(1-taxaApp)-custoCombKm;
+  var viavel=margemKm>0;
+  var kmMes=viavel?(custoFixoMes+metaLucro)/margemKm:0;      // km/mes p/ cobrir custos fixos + meta
+  var kmDia=diasMes>0?kmMes/diasMes:0;
+  var corridasDia=kmCorrida>0?kmDia/kmCorrida:0;
+  var custoCombTotal=custoCombKm*kmMes;
   var custoTotalMes=custoCombTotal+custoFixoMes;
   var custoTotalKm=kmMes>0?custoTotalMes/kmMes:0;
   var faturBruto=taxaApp<1?(custoTotalMes+metaLucro)/(1-taxaApp):0;
@@ -721,7 +741,7 @@ function calc(){
   var minCorrida=corridasMes>0&&taxaApp<1?faturBruto/corridasMes:0;
   var bepBruto=taxaApp<1?custoTotalMes/(1-taxaApp):0;
   var taxaValorMes=faturBruto*taxaApp;
-  D={consumo:consumo,precoComb:precoComb,kmDia:kmDia,diasSemana:diasSemana,parcela:parcela,amort:amort,manut:manut,seguro:seguro,ipva:ipva,taxaApp:taxaApp,outros:outros,metaLucro:metaLucro,corridasDia:corridasDia,kmCorrida:kmCorrida,diasMes:diasMes,kmMes:kmMes,custoCombKm:custoCombKm,custoCombTotal:custoCombTotal,custoFixoMes:custoFixoMes,custoTotalMes:custoTotalMes,custoTotalKm:custoTotalKm,faturBruto:faturBruto,faturDia:faturDia,faturSemana:faturSemana,minKmBruto:minKmBruto,minCorrida:minCorrida,corridasMes:corridasMes,bepBruto:bepBruto,taxaValorMes:taxaValorMes};
+  D={consumo:consumo,precoComb:precoComb,kmDia:kmDia,diasSemana:diasSemana,parcela:parcela,amort:amort,manut:manut,seguro:seguro,ipva:ipva,taxaApp:taxaApp,outros:outros,metaLucro:metaLucro,corridasDia:corridasDia,kmCorrida:kmCorrida,diasMes:diasMes,kmMes:kmMes,custoCombKm:custoCombKm,custoCombTotal:custoCombTotal,custoFixoMes:custoFixoMes,custoTotalMes:custoTotalMes,custoTotalKm:custoTotalKm,faturBruto:faturBruto,faturDia:faturDia,faturSemana:faturSemana,minKmBruto:minKmBruto,minCorrida:minCorrida,corridasMes:corridasMes,bepBruto:bepBruto,taxaValorMes:taxaValorMes,ganhoKm:ganhoKm,margemKm:margemKm,viavel:viavel};
   renderResumo();renderMetas();renderAnalise();calcHoje();
 }
 
@@ -730,13 +750,17 @@ function renderResumo(){
 }
 
 function renderMetas(){
-  document.getElementById('metrics-metas').innerHTML='<div class="metric blue"><div class="metric-label">Meta diaria</div><div class="metric-value">'+fmt(D.faturDia)+'</div><div class="metric-sub">'+D.corridasDia+' corridas</div></div><div class="metric green"><div class="metric-label">Meta semanal</div><div class="metric-value">'+fmt(D.faturSemana)+'</div><div class="metric-sub">'+D.diasSemana+' dias</div></div><div class="metric amber"><div class="metric-label">Meta mensal</div><div class="metric-value">'+fmt(D.faturBruto)+'</div><div class="metric-sub">lucro: '+fmt(D.metaLucro)+'</div></div><div class="metric red"><div class="metric-label">Taxa app/mes</div><div class="metric-value">'+fmt(D.taxaValorMes)+'</div><div class="metric-sub">'+Math.round(D.taxaApp*100)+'%</div></div>';
+  document.getElementById('metrics-metas').innerHTML='<div class="metric blue"><div class="metric-label">Meta diaria</div><div class="metric-value">'+fmt(D.faturDia)+'</div><div class="metric-sub">~'+Math.ceil(D.corridasDia)+' corridas</div></div><div class="metric green"><div class="metric-label">Meta semanal</div><div class="metric-value">'+fmt(D.faturSemana)+'</div><div class="metric-sub">'+D.diasSemana+' dias</div></div><div class="metric amber"><div class="metric-label">Meta mensal</div><div class="metric-value">'+fmt(D.faturBruto)+'</div><div class="metric-sub">lucro: '+fmt(D.metaLucro)+'</div></div><div class="metric red"><div class="metric-label">Taxa app/mes</div><div class="metric-value">'+fmt(D.taxaValorMes)+'</div><div class="metric-sub">'+Math.round(D.taxaApp*100)+'%</div></div>';
   document.getElementById('km-comb').textContent=fmtK(D.custoCombKm);
   document.getElementById('km-total').textContent=fmtK(D.custoTotalKm);
   document.getElementById('km-min').textContent=fmtK(D.minKmBruto);
   document.getElementById('corrida-min').textContent='R$ '+fmtN(D.minCorrida);
   document.getElementById('corrida-min-desc').textContent='corrida de '+D.kmCorrida+' km';
-  document.getElementById('corridas-meta').innerHTML='<div style="display:flex;gap:20px;flex-wrap:wrap;align-items:center"><div><div class="metric-label">Corridas necessarias/dia</div><div style="font-family:var(--font-display);font-size:36px;font-weight:700;color:var(--accent2);margin:4px 0">'+Math.ceil(D.corridasMes/D.diasMes)+'</div><div style="font-size:12px;color:var(--faint)">para cobrir custos + lucro</div></div><div style="flex:1;min-width:180px"><p style="font-size:13px;color:var(--muted)">Valor minimo por corrida: <strong style="color:var(--text)">'+fmt(D.minCorrida)+'</strong></p><p style="font-size:12px;color:var(--faint);margin-top:6px">Corridas abaixo de <strong style="color:var(--amber2)">'+fmtK(D.minKmBruto)+' R$/km</strong> nao cobrem custos.</p></div></div>';
+  if(!D.viavel){
+    document.getElementById('corridas-meta').innerHTML='<div style="color:var(--amber2);font-size:14px;font-weight:600;margin-bottom:6px">&#9888; Com R$ '+fmtN(D.ganhoKm)+'/km, o ganho nao cobre a taxa do app + o combustivel.</div><div style="font-size:13px;color:var(--muted);line-height:1.6">Pegue corridas melhores (mais R$/km) ou reduza custos. So pra empatar (combustivel + taxa), voce precisaria de pelo menos <strong style="color:var(--text)">R$ '+fmtN(D.custoCombKm/(1-D.taxaApp))+'/km</strong>.</div>';
+  } else {
+    document.getElementById('corridas-meta').innerHTML='<div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start"><div><div class="metric-label">KM por dia</div><div style="font-family:var(--font-display);font-size:36px;font-weight:700;color:var(--green2);margin:4px 0">'+Math.round(D.kmDia)+'<span style="font-size:15px;color:var(--faint)"> km</span></div></div><div><div class="metric-label">Corridas por dia</div><div style="font-family:var(--font-display);font-size:36px;font-weight:700;color:var(--accent2);margin:4px 0">'+Math.ceil(D.corridasDia)+'</div></div><div style="flex:1;min-width:200px"><p style="font-size:13px;color:var(--muted);line-height:1.6">Rodando ~<strong style="color:var(--text)">'+Math.round(D.kmDia)+' km/dia</strong> em <strong style="color:var(--text)">'+D.diasSemana+' dias/semana</strong>, voce cobre os custos e tira <strong style="color:var(--green2)">'+fmt(D.metaLucro)+'</strong> de lucro liquido.</p><p style="font-size:12px;color:var(--faint);margin-top:6px">Base: ganho de R$ '+fmtN(D.ganhoKm)+'/km. Pegue corridas acima de <strong style="color:var(--amber2)">'+fmtK(D.minKmBruto)+' R$/km</strong> pra nao ter prejuizo.</p></div></div>';
+  }
 }
 
 function renderAnalise(){
