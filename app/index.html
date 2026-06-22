@@ -535,6 +535,11 @@ body.lic-locked{overflow:hidden;}
       <p style="font-size:12px;color:var(--muted);margin-top:8px">O quanto voce recebe (bruto, antes da taxa do app) por km rodado, em media. O app usa isso para <strong>recomendar quantos km e corridas por dia</strong> voce precisa — veja na aba <strong>Metas</strong>.</p>
     </div>
     <div class="card"><div class="card-title">Resumo dos custos mensais</div><div id="resumo-custos"></div></div>
+    <div class="card">
+      <div class="card-title">Dispositivo e licença</div>
+      <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Vai trocar de celular? Desconecte este aparelho para <strong>liberar sua chave</strong> e ativá-la em outro. Seu histórico e configurações continuam salvos aqui neste dispositivo.</p>
+      <button class="btn" id="lic-disc-btn" style="width:100%;justify-content:center" onclick="licDisconnect()">Desconectar este dispositivo</button>
+    </div>
     <div class="card" style="border-color:rgba(239,68,68,.25)">
       <div class="card-title" style="color:var(--red2)">Zona de perigo</div>
       <p style="font-size:13px;color:var(--muted);margin-bottom:12px">Apaga todo o historico permanentemente.</p>
@@ -676,6 +681,33 @@ function licActivate(key){
     })
     .catch(function(){ licMsg('Sem conexão. Conecte-se à internet para ativar (só nesta primeira vez).','err'); })
     .then(done, done);
+}
+function licDisconnect(){
+  var l=licGet();
+  if(!l || !l.token){ licLock(); return; }
+  var msg='Desconectar este dispositivo?\n\n'
+        +'• Sua chave volta a ficar LIVRE (uma vaga é liberada).\n'
+        +'• Você poderá ativá-la em OUTRO aparelho com a mesma chave.\n'
+        +'• Este aparelho voltará para a tela de ativação.\n'
+        +'• Seu histórico e configurações continuam salvos aqui.\n\n'
+        +'Tem certeza?';
+  if(!window.confirm(msg)) return;
+  function finishLocal(){
+    localStorage.removeItem(LICENSE.storeKey);
+    licLock();
+    licMsg('Dispositivo desconectado. A chave foi liberada para uso em outro aparelho.','ok');
+  }
+  var btn=document.getElementById('lic-disc-btn');
+  if(!LICENSE.endpoint){ finishLocal(); return; }
+  if(btn){ btn.disabled=true; btn.textContent='Desconectando…'; }
+  var body='acao=desativar&chave='+encodeURIComponent(l.key)+'&aparelho='+encodeURIComponent(licDeviceId());
+  fetch(LICENSE.endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:body})
+    .then(function(r){ return r.json(); })
+    .then(function(res){
+      if(res && res.ok){ finishLocal(); }
+      else { if(btn){ btn.disabled=false; btn.textContent='Desconectar este dispositivo'; } window.alert('Não foi possível desconectar agora ('+((res&&res.erro)||'erro')+'). Tente novamente.'); }
+    })
+    .catch(function(){ if(btn){ btn.disabled=false; btn.textContent='Desconectar este dispositivo'; } window.alert('Sem conexão. Conecte-se à internet para desconectar — assim a chave é liberada no servidor.'); });
 }
 function licRevalidate(){
   if(!LICENSE.endpoint) return;

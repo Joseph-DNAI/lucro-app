@@ -31,6 +31,12 @@ const C = {
   APARELHOS:6, MAX:7, IDS:8, ATIVADA_EM:9, ULTIMA:10, OBS:11
 };
 
+// ── Webhook de venda (Vaultly) ──
+const VENDAS_SHEET = 'Vendas';      // idempotência: 1 venda = 1 chave
+const PROD_SHEET   = 'Produtos';    // mapeamento produto -> tipo/link/template
+const V = { TRANSACAO:1, PRODUTO:2, EMAIL:3, CHAVE:4, DATA:5, STATUS:6 };
+const P = { PRODUTO:1, TIPO:2, LINK:3, TEMPLATE:4 };
+
 /* ════════════════════ ENDPOINTS HTTP ════════════════════ */
 
 function doGet(e) {
@@ -47,6 +53,7 @@ function doPost(e) {
   try { lock.waitLock(10000); } catch (err) { return jsonOut_({ ok:false, erro:'ocupado' }); }
   try {
     if (acao === 'ativar')    return jsonOut_(ativar_(chave, aparelho));
+    if (acao === 'desativar') return jsonOut_(desativar_(chave, aparelho));
     if (acao === 'revalidar') return jsonOut_(revalidar_(chave, aparelho));
     if (acao === 'venda')     return jsonOut_(handleVenda_(e));   // opcional (webhook)
     return jsonOut_({ ok:false, erro:'acao_invalida' });
@@ -89,6 +96,26 @@ function ativar_(chave, aparelho) {
   return { ok:true, token: token_(chave, aparelho) };
 }
 
+/* Desvincular ESTE aparelho — self-service pelo app: libera 1 vaga da chave. */
+function desativar_(chave, aparelho) {
+  if (!chave || !aparelho) return logRet_(chave, aparelho, 'invalida');
+  const found = findKeyRow_(chave);
+  if (!found) return logRet_(chave, aparelho, 'invalida');
+
+  const sh = found.sheet, r = found.row, v = found.values;
+  let ids;
+  try { ids = JSON.parse(v[C.IDS-1] || '[]'); } catch (e2) { ids = []; }
+
+  const i = ids.indexOf(aparelho);
+  if (i !== -1) ids.splice(i, 1);   // se não estava na lista, segue idempotente (ok)
+
+  sh.getRange(r, C.APARELHOS).setValue(ids.length);
+  sh.getRange(r, C.IDS).setValue(JSON.stringify(ids));
+  sh.getRange(r, C.ULTIMA).setValue(new Date());
+  log_(chave, aparelho, 'desativado');
+  return { ok:true, vagas: (Number(v[C.MAX-1]) || 2) - ids.length };
+}
+
 function revalidar_(chave, aparelho) {
   const found = findKeyRow_(chave);
   if (!found) return { ok:false, erro:'invalida' };
@@ -99,39 +126,69 @@ function revalidar_(chave, aparelho) {
   return { ok:true, token: token_(chave, aparelho) };
 }
 
-/* ════════════════════ WEBHOOK DE VENDA (opcional) ════════════════════
- * Liga a venda à entrega automática da chave por e-mail.
- * O formato do corpo varia por plataforma (Vaultly/Kiwify/Yampi) — ADAPTE
- * a extração do e-mail conforme o payload real quando for ligar o webhook.
+/* ════════════════════ WEBHOOK DE VENDA (Vaultly — Modelo A) ════════════════════
+ * Contrato (POST x-www-form-urlencoded, roteado por acao=venda):
+ *   payload = <JSON exato>   sig = <HMAC-SHA256 hex do payload, com WEBHOOK_SECRET>
+ * payload venda : {event:"sale", transacao_id, produto_id, email, nome, valor_cents, data}
+ * payload refund: {event:"refund", transacao_id}
+ * Resposta: {ok:true, codigo, link}  ou  {ok:false, erro:"esgotado|assinatura|..."}
+ * A Vaultly templata e ENVIA o e-mail (Modelo A) — aqui NÃO enviamos e-mail.
+ * Apps Script não expõe headers: por isso a assinatura vem no corpo (campo sig).
  */
 function handleVenda_(e) {
-  let email = '';
-  try {
-    if (e.parameter && e.parameter.email) email = e.parameter.email;
-    else if (e.postData && e.postData.contents) {
-      const b = JSON.parse(e.postData.contents);
-      email = b.email || (b.customer && b.customer.email) || b.buyer_email || '';
-    }
-  } catch (err) {}
-  email = (email || '').trim().toLowerCase();
+  const params = (e && e.parameter) || {};
+  const payloadStr = params.payload || (e.postData && e.postData.contents) || '';
+  const sig = params.sig || '';
+  if (!payloadStr) return { ok:false, erro:'payload' };
+  if (!verifySig_(payloadStr, sig)) return { ok:false, erro:'assinatura' };
+
+  let body;
+  try { body = JSON.parse(payloadStr); } catch (err) { return { ok:false, erro:'json' }; }
+
+  const event     = String(body.event || 'sale').toLowerCase();
+  const transacao = String(body.transacao_id || '').trim();
+  if (!transacao) return { ok:false, erro:'sem_transacao' };
+
+  if (event === 'refund') return refundVenda_(transacao);
+
+  // ── Venda ──
+  const email     = String(body.email || '').trim().toLowerCase();
+  const nome      = String(body.nome || '').trim();
+  const produtoId = String(body.produto_id || '').trim();
   if (!email) return { ok:false, erro:'sem_email' };
 
-  const chave = pegarChaveDisponivel_(email);
-  if (!chave) return { ok:false, erro:'sem_estoque' };  // gere mais chaves no menu
+  const prod = getProduto_(produtoId); // {tipo, link, template} (default: codigo + APP_LINK)
 
-  try {
-    MailApp.sendEmail({
-      to: email,
-      subject: 'Sua chave do Lucro App 🚗',
-      htmlBody:
-        'Olá! Obrigado pela compra. 🎉<br><br>' +
-        'Sua chave de licença é:<br>' +
-        '<b style="font-size:20px;letter-spacing:2px">' + chave + '</b><br><br>' +
-        'Acesse e ative em: <a href="' + APP_LINK + '">' + APP_LINK + '</a><br>' +
-        'A chave funciona em até 2 aparelhos (ex.: celular + PC).<br><br>' +
-        'Bons lucros! 🚀'
-    });
-  } catch (err) { /* falha de e-mail não invalida a venda */ }
+  // Idempotência: a Vaultly reenvia até 3x — nunca emitir 2 chaves p/ a mesma venda.
+  const ja = findVenda_(transacao);
+  if (ja && ['entregue','link'].indexOf(String(ja.status).toLowerCase()) !== -1) {
+    return ja.chave ? { ok:true, codigo: ja.chave, link: prod.link } : { ok:true, link: prod.link };
+  }
+
+  if (prod.tipo === 'link') {
+    if (ja) updateVenda_(transacao, '', 'link'); else recordVenda_(transacao, produtoId, email, '', 'link');
+    return { ok:true, link: prod.link };
+  }
+
+  // tipo 'codigo' → consome uma chave da aba "Chaves"
+  const chave = pegarChaveDisponivel_(email, nome, transacao);
+  if (!chave) {
+    if (!ja) recordVenda_(transacao, produtoId, email, '', 'sem_estoque');
+    alertAdmin_('Lucro App: ESTOQUE DE CHAVES ESGOTADO',
+      'A venda ' + transacao + ' (produto ' + (produtoId||'-') + ', ' + email + ') ficou SEM CHAVE.\n' +
+      'Gere mais chaves no menu "Lucro App" → Gerar chaves. A Vaultly vai reenviar e a entrega completa sozinha.');
+    return { ok:false, erro:'esgotado' };
+  }
+  if (ja) updateVenda_(transacao, chave, 'entregue'); else recordVenda_(transacao, produtoId, email, chave, 'entregue');
+  return { ok:true, codigo: chave, link: prod.link };
+}
+
+/* Reembolso/chargeback → revoga a chave da venda (app trava na próxima revalidação). */
+function refundVenda_(transacao) {
+  const ja = findVenda_(transacao);
+  if (!ja) return { ok:true };                 // nada a fazer (idempotente)
+  if (ja.chave) revogarChave_(ja.chave);
+  updateVenda_(transacao, ja.chave, 'reembolsada');
   return { ok:true };
 }
 
@@ -144,6 +201,8 @@ function onOpen() {
     .addSeparator()
     .addItem('Revogar chave (linha selecionada)', 'menuRevogar')
     .addItem('Resetar aparelhos (linha selecionada)', 'menuResetar')
+    .addSeparator()
+    .addItem('Webhook: ver segredo (colar na Vaultly)', 'menuWebhookSecret')
     .addToUi();
 }
 
@@ -211,8 +270,23 @@ function setup() {
     cfg.appendRow(['max_aparelhos', 2]);
     cfg.getRange('1:1').setFontWeight('bold');
   }
+  // Aba Vendas (idempotência do webhook de venda)
+  let vendas = ss.getSheetByName(VENDAS_SHEET) || ss.insertSheet(VENDAS_SHEET);
+  if (vendas.getLastRow() === 0) {
+    vendas.appendRow(['transacao_id','produto','email','chave','data','status']);
+    vendas.getRange('1:1').setFontWeight('bold'); vendas.setFrozenRows(1);
+  }
+  // Aba Produtos (mapeamento produto -> codigo|link)
+  let prods = ss.getSheetByName(PROD_SHEET) || ss.insertSheet(PROD_SHEET);
+  if (prods.getLastRow() === 0) {
+    prods.appendRow(['produto_id','tipo','link','template']);
+    prods.appendRow(['', 'codigo', APP_LINK, '']); // exemplo: preencha produto_id com o SLUG da Vaultly
+    prods.getRange('1:1').setFontWeight('bold'); prods.setFrozenRows(1);
+  }
+
   // Segredo do token (em Script Properties — fora da planilha e do código)
   secret_();
+  webhookSecret_();   // segredo do webhook de venda (separado)
   // Remove a planilha-padrão vazia, se existir
   const def = ss.getSheetByName('Página1') || ss.getSheetByName('Sheet1');
   if (def && ss.getSheets().length > 1) { try { ss.deleteSheet(def); } catch (e) {} }
@@ -251,7 +325,7 @@ function chavesExistentes_(sh) {
   return set;
 }
 
-function pegarChaveDisponivel_(email) {
+function pegarChaveDisponivel_(email, nome, transacao) {
   const sh = getSheet_(KEY_SHEET);
   const vals = sh.getDataRange().getValues();
   for (let i = 1; i < vals.length; i++) {
@@ -259,7 +333,9 @@ function pegarChaveDisponivel_(email) {
       const r = i+1;
       sh.getRange(r, C.STATUS).setValue('vendida');
       sh.getRange(r, C.EMAIL).setValue(email);
+      if (nome) sh.getRange(r, C.NOME).setValue(nome);
       sh.getRange(r, C.DATA_VENDA).setValue(new Date());
+      if (transacao) sh.getRange(r, C.OBS).setValue('venda:' + transacao);
       return String(vals[i][C.CHAVE-1]);
     }
   }
@@ -287,6 +363,89 @@ function secret_() {
 function token_(chave, aparelho) {
   const raw = Utilities.computeHmacSha256Signature(chave + '|' + aparelho, secret_());
   return Utilities.base64EncodeWebSafe(raw);
+}
+
+/* ── Webhook de venda (Vaultly): assinatura, idempotência, produtos ── */
+
+function webhookSecret_() {
+  const p = PropertiesService.getScriptProperties();
+  let s = p.getProperty('WEBHOOK_SECRET');
+  if (!s) { s = Utilities.getUuid().replace(/-/g,'') + Utilities.getUuid().replace(/-/g,''); p.setProperty('WEBHOOK_SECRET', s); }
+  return s;
+}
+
+function hmacHex_(str) {
+  const bytes = Utilities.computeHmacSha256Signature(str, webhookSecret_());
+  return bytes.map(function (b) { return ('0' + (b & 0xff).toString(16)).slice(-2); }).join('');
+}
+
+// Compara a assinatura recebida (no corpo) com o HMAC esperado, em tempo ~constante.
+function verifySig_(payloadStr, sig) {
+  const got = String(sig || '').replace(/^sha256=/i, '').toLowerCase();
+  const exp = hmacHex_(payloadStr);
+  if (got.length !== exp.length) return false;
+  let diff = 0;
+  for (let i = 0; i < exp.length; i++) diff |= got.charCodeAt(i) ^ exp.charCodeAt(i);
+  return diff === 0;
+}
+
+// Config do produto na aba "Produtos". Default seguro: codigo + APP_LINK.
+function getProduto_(produtoId) {
+  try {
+    const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(PROD_SHEET);
+    if (sh && produtoId) {
+      const vals = sh.getDataRange().getValues();
+      for (let i = 1; i < vals.length; i++) {
+        if (String(vals[i][P.PRODUTO-1]).trim() === produtoId) {
+          return {
+            tipo: String(vals[i][P.TIPO-1] || 'codigo').toLowerCase(),
+            link: String(vals[i][P.LINK-1] || APP_LINK),
+            template: String(vals[i][P.TEMPLATE-1] || '')
+          };
+        }
+      }
+    }
+  } catch (e) {}
+  return { tipo: 'codigo', link: APP_LINK, template: '' };
+}
+
+function findVenda_(transacao) {
+  const sh = getSheet_(VENDAS_SHEET);
+  const vals = sh.getDataRange().getValues();
+  for (let i = 1; i < vals.length; i++) {
+    if (String(vals[i][V.TRANSACAO-1]).trim() === transacao) {
+      return { row:i+1, chave:String(vals[i][V.CHAVE-1]||''), status:String(vals[i][V.STATUS-1]||'') };
+    }
+  }
+  return null;
+}
+
+function recordVenda_(transacao, produto, email, chave, status) {
+  getSheet_(VENDAS_SHEET).appendRow([transacao, produto, email, chave, new Date(), status]);
+}
+
+function updateVenda_(transacao, chave, status) {
+  const v = findVenda_(transacao);
+  if (!v) return;
+  const sh = getSheet_(VENDAS_SHEET);
+  if (chave !== undefined && chave !== null) sh.getRange(v.row, V.CHAVE).setValue(chave);
+  sh.getRange(v.row, V.STATUS).setValue(status);
+}
+
+function revogarChave_(chave) {
+  const found = findKeyRow_(normKey_(chave));
+  if (found) found.sheet.getRange(found.row, C.STATUS).setValue('revogada');
+}
+
+function alertAdmin_(assunto, corpo) {
+  try {
+    const to = getConfig_('admin_email') || Session.getEffectiveUser().getEmail();
+    if (to) MailApp.sendEmail({ to: to, subject: assunto, body: corpo });
+  } catch (e) {}
+}
+
+function menuWebhookSecret() {
+  SpreadsheetApp.getUi().alert('Segredo do webhook (cole na Vaultly, no campo do produto):\n\n' + webhookSecret_());
 }
 
 function log_(chave, aparelho, resultado) {
